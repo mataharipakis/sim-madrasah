@@ -235,6 +235,9 @@
                             <button onclick="openFormModal()" class="w-full xl:w-auto justify-center bg-brand-800 hover:bg-brand-900 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors flex items-center gap-2 shadow-sm">
                                 <i data-lucide="plus" class="w-4 h-4"></i> Tambah Data
                             </button>
+                            <button onclick="forceSync()" class="w-auto justify-center bg-brand-50 hover:bg-brand-100 text-brand-800 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors flex items-center gap-2 shadow-sm" title="Sinkronisasi dari Server">
+                                <i data-lucide="refresh-cw" class="w-4 h-4" id="sync-icon"></i>
+                            </button>
                         </div>
                         <div class="flex flex-wrap items-center gap-2 w-full xl:w-auto">
                             <input type="file" id="excel-upload" accept=".xlsx, .xls" class="hidden" onchange="handleExcelUpload(event)">
@@ -293,7 +296,7 @@
             </div>
             <div class="p-6 border-t border-gray-100 flex justify-end gap-3 bg-gray-50/50 rounded-b-3xl">
                 <button onclick="closeFormModal()" class="px-5 py-2.5 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-200 transition-colors">Batal</button>
-                <button onclick="saveFormData()" class="px-5 py-2.5 rounded-xl text-sm font-medium bg-brand-800 hover:bg-brand-900 text-white transition-colors flex items-center gap-2 shadow-sm">
+                <button id="btn-save-form" onclick="saveFormData()" class="px-5 py-2.5 rounded-xl text-sm font-medium bg-brand-800 hover:bg-brand-900 text-white transition-colors flex items-center gap-2 shadow-sm">
                     <i data-lucide="save" class="w-4 h-4"></i> Simpan Ke Database
                 </button>
             </div>
@@ -326,12 +329,10 @@
         // 1. KONFIGURASI PENTING (API BACKEND)
         // ==========================================
         
-        // SAKLAR APLIKASI
-        // true  = Mode Dummy (Coba UI tanpa database)
-        // false = Mode Produksi (Wajib masukkan GAS_URL untuk narik/simpan data asli)
+        // PERHATIKAN: Penulisan 'false' di JavaScript WAJIB menggunakan huruf kecil semua.
         const IS_PREVIEW = false; 
         
-        // ⚠️ TEMPELKAN URL DEPLOY APPS SCRIPT ANDA DI SINI
+        // ⚠️ TEMPELKAN URL DEPLOY APPS SCRIPT ANDA DI SINI (contoh: "https://script.google.com/macros/s/..../exec")
         const GAS_URL = "https://script.google.com/macros/s/AKfycbyBqp3uZSX37bQBCEovss7vmzP2-OzYmRY4lKO0nXfL0j3_v2tNV2bdfnGT9qZglD5YRQ/exec"; 
 
         // State aplikasi
@@ -347,13 +348,15 @@
                 title: 'Data Induk Siswa',
                 subtitle: 'Manajemen rekaman data siswa madrasah',
                 headers: [], // Akan diisi otomatis dari Server (Sheet)
-                data: []
+                data: [],
+                isFetched: false
             },
             gtk: {
                 title: 'Data Induk Guru / GTK',
                 subtitle: 'Manajemen tenaga kependidikan',
                 headers: [],
-                data: []
+                data: [],
+                isFetched: false
             }
         };
 
@@ -405,18 +408,22 @@
             }
 
             try {
-                // Konfigurasi fetch khusus GAS (menghindari block CORS)
+                // Menggunakan URLSearchParams agar lolos dari blokir CORS Google
                 const response = await fetch(GAS_URL, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                    body: JSON.stringify({ action: action, payload: payload })
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({
+                        'action': action,
+                        'payload': JSON.stringify(payload)
+                    })
                 });
                 
                 const result = await response.json();
                 return result;
             } catch (error) {
                 console.error('Fetch Error:', error);
-                return { status: 'error', message: 'Koneksi ke database gagal. Pastikan URL GAS benar.' };
+                // Jika error, kembalikan pesan agar Toast bisa muncul
+                return { status: 'error', message: 'Koneksi terputus. Pastikan Akses GAS diatur ke "Semua Orang"' };
             }
         }
 
@@ -425,6 +432,8 @@
         // ==========================================
         async function handleLogin(e) {
             e.preventDefault();
+            console.log("Fungsi Login dipicu!"); // Debugging
+            
             const u = document.getElementById('username').value;
             const p = document.getElementById('password').value;
             
@@ -504,32 +513,57 @@
                 document.getElementById('page-title').textContent = 'Dashboard';
                 document.getElementById('page-subtitle').textContent = 'Ringkasan data operasional madrasah';
                 
-                // Fetch stat counts softly
+                // Fetch stat counts softly (Loading tersembunyi di background)
                 if(!IS_PREVIEW) {
-                    const resSiswa = await callAPI('getData', {menu: 'siswa'});
-                    if(resSiswa && resSiswa.data) document.getElementById('dash-siswa-count').textContent = resSiswa.data.length;
-                    const resGtk = await callAPI('getData', {menu: 'gtk'});
-                    if(resGtk && resGtk.data) document.getElementById('dash-gtk-count').textContent = resGtk.data.length;
+                    document.getElementById('dash-siswa-count').innerHTML = `<i data-lucide="loader-2" class="w-6 h-6 animate-spin text-brand-200 mt-2"></i>`;
+                    document.getElementById('dash-gtk-count').innerHTML = `<i data-lucide="loader-2" class="w-6 h-6 animate-spin text-gray-300 mt-2"></i>`;
+                    lucide.createIcons();
+                    
+                    callAPI('getData', {menu: 'siswa'}).then(res => {
+                        if(res && res.data) {
+                            appConfig.siswa.data = res.data;
+                            appConfig.siswa.isFetched = true;
+                            document.getElementById('dash-siswa-count').textContent = res.data.length;
+                        }
+                    });
+                    callAPI('getData', {menu: 'gtk'}).then(res => {
+                        if(res && res.data) {
+                            appConfig.gtk.data = res.data;
+                            appConfig.gtk.isFetched = true;
+                            document.getElementById('dash-gtk-count').textContent = res.data.length;
+                        }
+                    });
                 }
             } else {
                 document.getElementById('module-data').classList.remove('hidden');
                 document.getElementById('page-title').textContent = appConfig[menu].title;
                 document.getElementById('page-subtitle').textContent = appConfig[menu].subtitle;
                 
-                // PANGGIL DATABASE SHEET
+                // PANGGIL DATABASE SHEET (Dengan Sistem Caching Pintar)
                 if (IS_PREVIEW) {
                     renderTable(); // Pakai array kosong bawaan
                 } else {
-                    showLoading('Menarik data dari Google Sheets...');
-                    const res = await callAPI('getData', { menu: menu });
-                    hideLoading();
-
-                    if (res && res.status === 'success') {
-                        appConfig[menu].headers = res.headers || [];
-                        appConfig[menu].data = res.data || [];
+                    if (appConfig[menu].isFetched) {
+                        // Data sudah ada di cache browser, tampilkan INSTAN (0 detik)
                         renderTable();
                     } else {
-                        showToast('Gagal memuat data dari server', 'error');
+                        // Tampilkan loading spinner di DALAM tabel saja, bukan full screen
+                        document.getElementById('dynamic-thead').innerHTML = '';
+                        document.getElementById('dynamic-tbody').innerHTML = `<tr><td colspan="100%" class="text-center py-16"><i data-lucide="loader-2" class="w-10 h-10 text-brand-800 animate-spin mx-auto mb-3"></i><p class="text-gray-500 font-medium">Mengunduh data dari server...</p></td></tr>`;
+                        document.getElementById('table-empty-state').style.display = 'none';
+                        lucide.createIcons();
+
+                        const res = await callAPI('getData', { menu: menu });
+
+                        if (res && res.status === 'success') {
+                            appConfig[menu].headers = res.headers || [];
+                            appConfig[menu].data = res.data || [];
+                            appConfig[menu].isFetched = true; // Tandai sudah diunduh
+                            renderTable();
+                        } else {
+                            showToast('Gagal memuat data dari server', 'error');
+                            document.getElementById('dynamic-tbody').innerHTML = '';
+                        }
                     }
                 }
             }
@@ -654,14 +688,23 @@
             const isEdit = state.editingId !== null;
             const targetRowIndex = isEdit ? config.data[state.editingId]._rowIndex : null;
 
-            showLoading('Menyimpan ke Google Sheets...');
+            // Efek Loading hanya di dalam Tombol (Non-blocking)
+            const btnSave = document.getElementById('btn-save-form');
+            const originalBtnText = btnSave.innerHTML;
+            btnSave.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Menyimpan...`;
+            btnSave.disabled = true;
+            lucide.createIcons();
+
             const res = await callAPI('saveData', { menu: menu, data: newData, rowIndex: targetRowIndex });
-            hideLoading();
+            
+            // Kembalikan wujud tombol semula
+            btnSave.innerHTML = originalBtnText;
+            btnSave.disabled = false;
 
             if (res && res.status === 'success') {
-                showToast('Data berhasil di sinkronisasi dengan Server');
+                showToast('Data berhasil disimpan ke Server');
                 closeFormModal();
-                navigate(menu); // Refresh dari server agar mendapat _rowIndex terbaru
+                forceSync(); // Otomatis refresh data terbaru
             } else {
                 showToast(res ? res.message : 'Gagal menyimpan data', 'error');
             }
@@ -680,16 +723,44 @@
             }
 
             const targetRowIndex = config.data[index]._rowIndex;
+            
             showLoading('Menghapus data di Server...');
             const res = await callAPI('deleteData', { menu: menu, rowIndex: targetRowIndex });
             hideLoading();
 
             if (res && res.status === 'success') {
                 showToast('Data berhasil dihapus dari Server');
-                navigate(menu); // Refresh
+                forceSync(); // Otomatis refresh data terbaru
             } else {
                 showToast('Gagal menghapus data', 'error');
             }
+        }
+
+        // FUNGSI TARIK DATA ULANG MANUAL (SYNC)
+        async function forceSync() {
+            const menu = state.activeMenu;
+            if(menu === 'dashboard') return navigate('dashboard');
+            
+            const icon = document.getElementById('sync-icon');
+            if(icon) icon.classList.add('animate-spin');
+            
+            document.getElementById('dynamic-thead').innerHTML = '';
+            document.getElementById('dynamic-tbody').innerHTML = `<tr><td colspan="100%" class="text-center py-16"><i data-lucide="loader-2" class="w-10 h-10 text-brand-800 animate-spin mx-auto mb-3"></i><p class="text-gray-500 font-medium">Sinkronisasi data terbaru...</p></td></tr>`;
+            document.getElementById('table-empty-state').style.display = 'none';
+            lucide.createIcons();
+
+            const res = await callAPI('getData', { menu: menu });
+            if (res && res.status === 'success') {
+                appConfig[menu].headers = res.headers || [];
+                appConfig[menu].data = res.data || [];
+                appConfig[menu].isFetched = true;
+                renderTable();
+                showToast('Tersinkronisasi dengan server', 'success');
+            } else {
+                showToast('Gagal sinkronisasi data', 'error');
+                document.getElementById('dynamic-tbody').innerHTML = '';
+            }
+            if(icon) icon.classList.remove('animate-spin');
         }
 
         // ==========================================
